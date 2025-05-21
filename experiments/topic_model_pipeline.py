@@ -40,34 +40,35 @@ def clear_gpu_memory():
         gc.collect()
 
 class HFTransformerEmbedder:
-    def __init__(self, model_name, device=device, batch_size=8):
-        self.device = device
-        self.batch_size = batch_size
-        print(f"Loading model {model_name} on {device}...")
+    def __init__(self, model_name, device="cuda", batch_size=8, use_quantization=True):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name).to(device)
-        self.model.eval()  # Set to evaluation mode
+        self.model = AutoModel.from_pretrained(
+            model_name,
+            device_map=device,
+            torch_dtype=torch.float16,  # Use FP16 by default
+            load_in_8bit=use_quantization,  # Enable 8-bit quantization
+            low_cpu_mem_usage=True
+        )
+        self.batch_size = batch_size
+        self.device = device
 
     def encode(self, texts, batch_size=None):
         if batch_size is None:
             batch_size = self.batch_size
             
         embeddings = []
-        for i in tqdm(range(0, len(texts), batch_size), desc="Generating embeddings"):
-            batch = texts[i:i+batch_size]
-            inputs = self.tokenizer(batch, return_tensors='pt', padding=True, truncation=True).to(self.device)
+        for i in tqdm(range(0, len(texts), batch_size), desc="Encoding texts"):
+            batch_texts = texts[i:i + batch_size]
+            inputs = self.tokenizer(batch_texts, padding=True, truncation=True, 
+                                  max_length=512, return_tensors="pt").to(self.device)
             
             with torch.no_grad():
                 outputs = self.model(**inputs)
-                pooled = outputs.last_hidden_state.mean(dim=1)
-                embeddings.extend(pooled.cpu().numpy())
-            
-            # Clear memory after each batch
-            del inputs, outputs, pooled
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+                # Use mean pooling
+                batch_embeddings = outputs.last_hidden_state.mean(dim=1)
+                embeddings.append(batch_embeddings.cpu().numpy())
                 
-        return np.array(embeddings)
+        return np.vstack(embeddings)
 
 def calculate_topic_coherence(texts, topic_words, dictionary, corpus):
     """Calculate topic coherence using gensim's CoherenceModel."""
@@ -104,24 +105,28 @@ def calculate_topic_diversity(topic_words):
 def evaluate_model(texts, encoder):
     name, enc_type = encoder['name'], encoder['type']
     params = encoder.get('params', None)
+    use_quantization = encoder.get('use_quantization', False)
+    batch_size = encoder.get('batch_size', 8)
+    
     print(f"\nRunning BERTopic with encoder: {name}")
     start_time = time.time()
     
     try:
         if enc_type == "sentence-transformer":
-            # Configure SentenceTransformer for GPU
             embedder = SentenceTransformer(name, device=device)
         elif enc_type == "huggingface":
-            # Adjust batch size based on model size
-            batch_size = 4 if params and params > 1e9 else 8  # Smaller batch for large models
-            embedder = HFTransformerEmbedder(name, device=device, batch_size=batch_size).encode
+            embedder = HFTransformerEmbedder(
+                name, 
+                device=device, 
+                batch_size=batch_size,
+                use_quantization=use_quantization
+            ).encode
         else:
             return None
 
         # Clear GPU memory before BERTopic
         clear_gpu_memory()
         
-        # Pass the encoder/callable, not precomputed embeddings
         topic_model = BERTopic(
             embedding_model=embedder,
             verbose=True,
@@ -148,6 +153,8 @@ def evaluate_model(texts, encoder):
             "encoder": name,
             "type": enc_type,
             "params": params,
+            "use_quantization": use_quantization,
+            "batch_size": batch_size,
             "coherence": coherence,
             "diversity": diversity,
             "num_topics": len(set(topics)) - (1 if -1 in topics else 0),
@@ -172,9 +179,9 @@ def run_pipeline(texts, encoders):
     results = []
     for encoder in tqdm(encoders, desc="Evaluating encoders", unit="encoder"):
         # Skip Llama 2 models by default to avoid OOM errors
-        if encoder["name"].startswith("meta-llama/"):
-            print(f"Skipping {encoder['name']} due to GPU memory constraints. Remove this check to enable.")
-            continue
+        #if encoder["name"].startswith("meta-llama/"):
+        #    print(f"Skipping {encoder['name']} due to GPU memory constraints. Remove this check to enable.")
+        #    continue
         result = evaluate_model(texts, encoder)
         if result is not None:
             results.append(result)
@@ -256,8 +263,9 @@ if __name__ == "__main__":
         {
             "name": "meta-llama/Llama-2-7b-hf",
             "type": "huggingface",
-            "params": 7000000000,
-            "description": "Llama 2 7B: 7B parameters, Hugging Face Transformers. Download: https://huggingface.co/meta-llama/Llama-2-7b-hf"
+            "params": 7e9,  # 7B parameters
+            "use_quantization": True,  # Enable 8-bit quantization
+            "batch_size": 2  # Smaller batch size for memory efficiency
         },
         {
             "name": "meta-llama/Llama-2-13b-hf",
