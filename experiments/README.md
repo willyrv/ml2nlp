@@ -58,3 +58,47 @@ The results are saved to `results.csv`, which includes the following columns:
 - `diversity`: Topic diversity score.
 - `num_topics`: Number of unique topics.
 - `running_time_sec`: Time taken for the pipeline in seconds. 
+
+## Install packages using uv 
+
+uv is "An extremely fast Python package and project manager, written in Rust". You can download it from [here](https://github.com/astral-sh/uv).
+
+To run the code using uv (instructions for Windows but should be similar on other OS) you can:
+
+1- Install uv followign the instructions here: https://github.com/astral-sh/uv
+
+2- Clone this repository and go to the experiments folder
+
+```bash
+git clone https://github.com/willyrv/ml2nlp.git
+```
+
+```bash
+cd ml2nlp\experiments
+```
+
+3- Create a virtual environment using uv
+
+```bash
+uv venv --python 3.11
+```
+
+4- Activate the virtual environment
+
+```bash
+.venv/bin/activate
+```
+
+5- Install the required packages
+
+```bash
+uv pip install -r requirements.txt
+```
+
+6- Run the python script
+
+```bash
+python .\topic_model_pipeline.py
+```
+
+
